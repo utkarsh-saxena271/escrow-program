@@ -23,8 +23,19 @@ pub mod escrow_program {
         receive: u64,
         expiration: i64,
     ) -> Result<()> {
-        ctx.accounts.init_escrow(seed, receive, &ctx.bumps, expiration)?;
-        ctx.accounts.deposit(deposit)
+        ctx.accounts
+            .make(seed, deposit, receive, expiration, &ctx.bumps)
     }
-   
+
+    pub fn take(ctx: Context<Take>) -> Result<()> {
+        ctx.accounts.take()
+    }
+
+    pub fn refund(ctx: Context<Refund>) -> Result<()> {
+        ctx.accounts.refund()
+    }
+
+    pub fn update(ctx: Context<Update>, seed: u64, receive: u64, expiration: i64) -> Result<()> {
+        ctx.accounts.update(seed, receive, expiration)
+    }
 }
