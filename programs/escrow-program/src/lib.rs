@@ -15,11 +15,16 @@ declare_id!("BfJ9RytuctpknaRHwCbMQXwZ8WtMRdasPJSzHkKzzu7U");
 pub mod escrow_program {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        crate::instructions::initialize::handle_initialize(ctx)
+    #[instruction(discriminator = 0)]
+    pub fn make(
+        ctx: Context<Make>,
+        seed: u64,
+        deposit: u64,
+        receive: u64,
+        expiration: i64,
+    ) -> Result<()> {
+        ctx.accounts.init_escrow(seed, receive, &ctx.bumps, expiration)?;
+        ctx.accounts.deposit(deposit)
     }
-
-    pub fn increment(ctx: Context<Increment>) -> Result<()> {
-        crate::instructions::increment::handle_increment(ctx)
-    }
+   
 }
