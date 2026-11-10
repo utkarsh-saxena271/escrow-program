@@ -103,20 +103,39 @@ impl TestContext {
     }
 
     fn make_ix(&self, seed: u64) -> Instruction {
+        self.make_with(
+            seed,
+            self.taker.pubkey(),
+            self.mint_b,
+            DEPOSIT,
+            REQUESTED,
+            EXPIRATION,
+        )
+    }
+
+    fn make_with(
+        &self,
+        seed: u64,
+        taker: Pubkey,
+        mint_b: Pubkey,
+        deposit: u64,
+        receive: u64,
+        expiration: i64,
+    ) -> Instruction {
         Instruction::new_with_bytes(
             escrow_program::id(),
             &escrow_program::instruction::Make {
                 seed,
-                deposit: DEPOSIT,
-                receive: REQUESTED,
-                expiration: EXPIRATION,
+                deposit,
+                receive,
+                expiration,
             }
             .data(),
             escrow_program::accounts::Make {
                 maker: self.maker.pubkey(),
-                taker: self.taker.pubkey(),
+                taker,
                 mint_a: self.mint_a,
-                mint_b: self.mint_b,
+                mint_b,
                 maker_ata_a: self.maker_ata_a,
                 escrow: self.escrow(seed),
                 vault: self.vault(seed),
@@ -155,15 +174,19 @@ impl TestContext {
     }
 
     fn refund_ix(&self, seed: u64) -> Instruction {
+        self.refund_by(seed, self.maker.pubkey(), self.maker_ata_a)
+    }
+
+    fn refund_by(&self, seed: u64, signer: Pubkey, signer_ata_a: Pubkey) -> Instruction {
         Instruction::new_with_bytes(
             escrow_program::id(),
             &escrow_program::instruction::Refund {}.data(),
             escrow_program::accounts::Refund {
-                maker: self.maker.pubkey(),
+                maker: signer,
                 escrow: self.escrow(seed),
                 mint_a: self.mint_a,
                 vault: self.vault(seed),
-                maker_ata_a: self.maker_ata_a,
+                maker_ata_a: signer_ata_a,
                 token_program: TOKEN_PROGRAM_ID,
             }
             .to_account_metas(None),
@@ -391,4 +414,195 @@ fn maker_can_refund_only_at_or_after_expiration() {
     assert_eq!(context.token_balance(context.maker_ata_a), 100);
     assert!(context.svm.get_account(&context.escrow(seed)).is_none());
     assert!(context.svm.get_account(&context.vault(seed)).is_none());
+}
+
+// ---------- make: validation failures ----------
+
+#[test]
+fn make_rejects_same_mint() {
+    let mut context = TestContext::new();
+    let seed = 10;
+    let ix = context.make_with(
+        seed,
+        context.taker.pubkey(),
+        context.mint_a, // mint_b == mint_a
+        DEPOSIT,
+        REQUESTED,
+        EXPIRATION,
+    );
+    assert!(send(&mut context.svm, &context.maker, &[&context.maker], ix).is_err());
+    assert!(context.svm.get_account(&context.escrow(seed)).is_none());
+    assert_eq!(context.token_balance(context.maker_ata_a), 100);
+}
+
+#[test]
+fn make_rejects_expiration_in_the_past() {
+    let mut context = TestContext::new();
+    let seed = 11;
+
+    for expiration in [INITIAL_TIME, INITIAL_TIME - 1] {
+        let ix = context.make_with(
+            seed,
+            context.taker.pubkey(),
+            context.mint_b,
+            DEPOSIT,
+            REQUESTED,
+            expiration,
+        );
+        assert!(send(&mut context.svm, &context.maker, &[&context.maker], ix).is_err());
+    }
+    assert!(context.svm.get_account(&context.escrow(seed)).is_none());
+    assert_eq!(context.token_balance(context.maker_ata_a), 100);
+}
+
+#[test]
+fn make_rejects_zero_amounts() {
+    let mut context = TestContext::new();
+    let seed = 12;
+
+    let zero_deposit = context.make_with(
+        seed,
+        context.taker.pubkey(),
+        context.mint_b,
+        0,
+        REQUESTED,
+        EXPIRATION,
+    );
+    assert!(send(
+        &mut context.svm,
+        &context.maker,
+        &[&context.maker],
+        zero_deposit
+    )
+    .is_err());
+
+    let zero_receive = context.make_with(
+        seed,
+        context.taker.pubkey(),
+        context.mint_b,
+        DEPOSIT,
+        0,
+        EXPIRATION,
+    );
+    assert!(send(
+        &mut context.svm,
+        &context.maker,
+        &[&context.maker],
+        zero_receive
+    )
+    .is_err());
+
+    assert!(context.svm.get_account(&context.escrow(seed)).is_none());
+    assert_eq!(context.token_balance(context.maker_ata_a), 100);
+}
+
+#[test]
+fn make_rejects_maker_as_taker() {
+    let mut context = TestContext::new();
+    let seed = 13;
+    let ix = context.make_with(
+        seed,
+        context.maker.pubkey(), // taker == maker
+        context.mint_b,
+        DEPOSIT,
+        REQUESTED,
+        EXPIRATION,
+    );
+    assert!(send(&mut context.svm, &context.maker, &[&context.maker], ix).is_err());
+    assert!(context.svm.get_account(&context.escrow(seed)).is_none());
+    assert_eq!(context.token_balance(context.maker_ata_a), 100);
+}
+
+// ---------- update: failures ----------
+
+#[test]
+fn update_fails_after_expiry() {
+    let mut context = TestContext::new();
+    let seed = 14;
+    let make = context.make_ix(seed);
+    send(&mut context.svm, &context.maker, &[&context.maker], make).unwrap();
+
+    context.set_time(EXPIRATION);
+    let update = context.update_ix(seed, 90, 300);
+    assert!(send(&mut context.svm, &context.maker, &[&context.maker], update).is_err());
+    assert_escrow_state(&context, seed, REQUESTED, EXPIRATION);
+}
+
+#[test]
+fn update_rejects_zero_receive_and_past_expiration() {
+    let mut context = TestContext::new();
+    let seed = 15;
+    let make = context.make_ix(seed);
+    send(&mut context.svm, &context.maker, &[&context.maker], make).unwrap();
+
+    let zero_receive = context.update_ix(seed, 0, 300);
+    assert!(send(
+        &mut context.svm,
+        &context.maker,
+        &[&context.maker],
+        zero_receive
+    )
+    .is_err());
+
+    let past_expiration = context.update_ix(seed, 90, INITIAL_TIME);
+    assert!(send(
+        &mut context.svm,
+        &context.maker,
+        &[&context.maker],
+        past_expiration
+    )
+    .is_err());
+
+    assert_escrow_state(&context, seed, REQUESTED, EXPIRATION);
+}
+
+// ---------- refund: failure ----------
+
+#[test]
+fn refund_by_non_maker_fails() {
+    let mut context = TestContext::new();
+    let seed = 16;
+    let make = context.make_ix(seed);
+    send(&mut context.svm, &context.maker, &[&context.maker], make).unwrap();
+
+    // past expiry, so the only reason to fail is the wrong signer
+    context.set_time(EXPIRATION);
+    let ix = context.refund_by(seed, context.attacker.pubkey(), context.attacker_ata_a);
+    assert!(send(&mut context.svm, &context.attacker, &[&context.attacker], ix).is_err());
+
+    assert_eq!(context.token_balance(context.vault(seed)), DEPOSIT);
+    assert_eq!(context.token_balance(context.attacker_ata_a), 0);
+    assert!(context.svm.get_account(&context.escrow(seed)).is_some());
+}
+
+// ---------- take: failure ----------
+
+#[test]
+fn take_fails_when_taker_cannot_pay() {
+    let mut context = TestContext::new();
+    let seed = 17;
+    // taker only holds 100 of mint B, so ask for more than that
+    let make = context.make_with(
+        seed,
+        context.taker.pubkey(),
+        context.mint_b,
+        DEPOSIT,
+        150,
+        EXPIRATION,
+    );
+    send(&mut context.svm, &context.maker, &[&context.maker], make).unwrap();
+
+    let take = context.take_ix(
+        seed,
+        context.taker.pubkey(),
+        context.taker_ata_a,
+        context.taker_ata_b,
+    );
+    assert!(send(&mut context.svm, &context.taker, &[&context.taker], take).is_err());
+
+    assert_eq!(context.token_balance(context.vault(seed)), DEPOSIT);
+    assert_eq!(context.token_balance(context.taker_ata_a), 0);
+    assert_eq!(context.token_balance(context.taker_ata_b), 100);
+    assert_eq!(context.token_balance(context.maker_ata_b), 0);
+    assert!(context.svm.get_account(&context.escrow(seed)).is_some());
 }
