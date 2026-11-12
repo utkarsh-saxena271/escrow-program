@@ -9,7 +9,7 @@ A token-for-token escrow on Solana, written with Anchor. A maker locks token A i
 | Framework | Anchor 1.x (`anchor-lang 1.1.2`, `anchor-spl 1.2.2`) |
 | Tests | Rust + [LiteSVM](https://github.com/LiteSVM/litesvm) |
 | Rust toolchain | 1.89.0 (pinned in `rust-toolchain.toml`) |
-| Tokens | Any two SPL tokens (classic Token or Token-2022, both on the same token program) |
+| Tokens | Any two SPL tokens on the same token program (classic Token or Token-2022, without the transfer-fee extension) |
 
 **Timed mechanism and condition (extension challenge):**
 - **Condition (signature):** only the `taker` stored at `make` can sign `take`.
@@ -82,7 +82,7 @@ pub struct Escrow {
 }
 ```
 
-`deposit` is a record only. `take` and `refund` pay out the vault's real balance (`vault.amount`), which also keeps them correct if a Token-2022 transfer fee reduced what arrived.
+`deposit` is a record only. `take` and `refund` pay out the vault's real balance (`vault.amount`) instead of this field.
 
 ---
 
@@ -196,7 +196,7 @@ Wrong signers and wrong accounts are rejected by Anchor's constraints (`address`
 - **Existing token accounts required.** `take` needs `taker_ata_a` and `maker_ata_b` to exist already, because it does not create them.
 - **Refund needs the maker's token A account.** `refund` fails if the maker closed `maker_ata_a` after `make`, until they recreate it.
 - **One token program.** Both mints must belong to the same token program. A classic-Token vs Token-2022 swap isn't supported.
-- **Token-2022 transfer fees.** The vault may receive less than `deposit`. That is why payouts use `vault.amount`.
+- **Transfer-fee mints are not supported.** Token-2022 mints with the transfer-fee extension keep fees withheld in the vault, which blocks closing it until they are harvested. Use mints without that extension.
 
 ---
 
